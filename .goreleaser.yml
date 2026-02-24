@@ -26,6 +26,8 @@ brews:
   - repository:
       owner: razvanmacovei
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
     homepage: https://github.com/razvanmacovei/x402-cli
     description: CLI tool for testing x402 payment-gated endpoints
     license: Apache-2.0
