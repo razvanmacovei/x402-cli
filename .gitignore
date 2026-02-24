@@ -1,0 +1,4 @@
+bin/
+dist/
+x402-test-client
+.env

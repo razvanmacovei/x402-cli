@@ -1,0 +1,38 @@
+version: 2
+
+builds:
+  - binary: x402-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+brews:
+  - repository:
+      owner: razvanmacovei
+      name: homebrew-tap
+    homepage: https://github.com/razvanmacovei/x402-cli
+    description: CLI tool for testing x402 payment-gated endpoints
+    license: Apache-2.0
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^ci:"
