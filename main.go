@@ -68,6 +68,16 @@ type payResult struct {
 }
 
 func main() {
+	if version == "" {
+		version = buildVersion()
+	}
+
+	// Handle "wallet" subcommand before flag parsing.
+	if len(os.Args) > 1 && os.Args[1] == "wallet" {
+		runWalletCmd(os.Args[2:])
+		return
+	}
+
 	var (
 		insecure   bool
 		timeout    time.Duration
@@ -80,12 +90,9 @@ func main() {
 		jsonOutput bool
 		autoYes    bool
 		quiet      bool
+		outputFile string
 		headers    headerFlags
 	)
-
-	if version == "" {
-		version = buildVersion()
-	}
 
 	flag.BoolVar(&insecure, "insecure", false, "Skip TLS certificate verification")
 	flag.BoolVar(&insecure, "k", false, "Skip TLS certificate verification (shorthand)")
@@ -106,23 +113,27 @@ func main() {
 	flag.BoolVar(&autoYes, "y", false, "Auto-confirm payment without prompting (shorthand)")
 	flag.BoolVar(&quiet, "quiet", false, "Suppress human-readable output, only print JSON or exit code")
 	flag.BoolVar(&quiet, "q", false, "Suppress human-readable output (shorthand)")
+	flag.StringVar(&outputFile, "output", "", "Save response body to file")
+	flag.StringVar(&outputFile, "o", "", "Save response body to file (shorthand)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "x402-cli %s — test x402 payment endpoints\n\n", version)
-		fmt.Fprintf(os.Stderr, "Usage:\n  x402-cli [flags] <url>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage:\n  x402-cli [flags] <url>\n  x402-cli wallet [--network <name>] [--json]\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  x402-cli https://api.example.com/paid-endpoint\n")
 		fmt.Fprintf(os.Stderr, "  x402-cli -k https://podinfo.localhost/api/info\n")
 		fmt.Fprintf(os.Stderr, "  x402-cli -X POST -d '{\"query\": \"hello\"}' -H 'Content-Type: application/json' https://api.example.com/ask\n")
 		fmt.Fprintf(os.Stderr, "  x402-cli -v --dry-run https://api.example.com/paid-endpoint\n")
-		fmt.Fprintf(os.Stderr, "  x402-cli --json -y https://api.example.com/paid-endpoint   # agent mode\n\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli --json -y -o response.json https://api.example.com/paid-endpoint\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli wallet                          # show address + USDC balances\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli wallet --network base-sepolia   # single network\n\n")
 		fmt.Fprintf(os.Stderr, "Exit codes:\n")
 		fmt.Fprintf(os.Stderr, "  0  Success (payment accepted or probe completed)\n")
 		fmt.Fprintf(os.Stderr, "  1  Error (network, config, or unexpected failure)\n")
 		fmt.Fprintf(os.Stderr, "  2  Payment rejected by facilitator\n")
 		fmt.Fprintf(os.Stderr, "  3  Route is free (no payment needed)\n\n")
 		fmt.Fprintf(os.Stderr, "Environment:\n")
-		fmt.Fprintf(os.Stderr, "  EVM_PRIVATE_KEY    Private key for signing payments (required for Step 2)\n\n")
+		fmt.Fprintf(os.Stderr, "  EVM_PRIVATE_KEY    Private key for signing payments (required)\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
@@ -247,6 +258,7 @@ func main() {
 		logln("Endpoint did not return 402 Payment Required.")
 		if resp.StatusCode == http.StatusOK {
 			logln("The endpoint is accessible without payment (free route).")
+			saveOutput(outputFile, body)
 			result.Status = "free"
 			if jsonOutput {
 				exitJSON(result, ExitFreeRoute)
@@ -368,6 +380,9 @@ func main() {
 		}
 	}
 
+	// Save response body to file if -o is set.
+	saveOutput(outputFile, body2)
+
 	switch resp2.StatusCode {
 	case http.StatusOK:
 		logln("Payment accepted!")
@@ -391,6 +406,16 @@ func main() {
 			exitJSON(result, ExitError)
 		}
 		os.Exit(ExitError)
+	}
+}
+
+// saveOutput writes body to a file if outputFile is set.
+func saveOutput(outputFile string, body []byte) {
+	if outputFile == "" || len(body) == 0 {
+		return
+	}
+	if err := os.WriteFile(outputFile, body, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write to %s: %v\n", outputFile, err)
 	}
 }
 
