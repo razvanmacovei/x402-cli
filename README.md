@@ -213,7 +213,7 @@ Any EVM network supported by the x402 protocol:
 
 ## OpenClaw Skill
 
-x402-cli is available as an [OpenClaw](https://openclaw.ai) AI assistant skill via [ClawHub](https://clawhub.ai).
+x402-cli is available as an [OpenClaw](https://openclaw.ai) AI assistant skill via [ClawHub](https://clawhub.ai/razvanmacovei/x402-cli).
 
 This enables AI agents running in OpenClaw to autonomously probe and pay x402-gated APIs without human intervention, using the `exec` tool.
 
