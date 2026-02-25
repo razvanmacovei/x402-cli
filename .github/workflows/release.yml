@@ -55,7 +55,7 @@ jobs:
         run: |
           npm i -g clawhub
           clawhub login --token "$CLAWHUB_TOKEN" --no-browser
-          clawhub publish . --slug x402-cli --name "x402-cli" \
+          clawhub publish skill/ --slug x402-cli --name "x402-cli" \
             --version ${GITHUB_REF_NAME#v} \
             --changelog "Release ${GITHUB_REF_NAME}"
         env:

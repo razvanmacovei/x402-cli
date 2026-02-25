@@ -222,7 +222,7 @@ This enables AI agents running in OpenClaw to autonomously probe and pay x402-ga
 clawhub install x402-cli
 ```
 
-See [`SKILL.md`](SKILL.md) for the full skill manifest.
+See [`skill/SKILL.md`](skill/SKILL.md) for the full skill manifest.
 
 ## Related
 
