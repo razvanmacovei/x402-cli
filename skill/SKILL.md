@@ -1,3 +1,23 @@
+---
+name: x402-cli
+description: Pay for x402 payment-gated HTTP endpoints using USDC stablecoins
+version: 1.0.3
+metadata:
+  openclaw:
+    requires:
+      env: [EVM_PRIVATE_KEY]
+      bins: [x402-cli]
+    primaryEnv: EVM_PRIVATE_KEY
+    install:
+      - kind: brew
+        formula: razvanmacovei/tap/x402-cli
+        bins: [x402-cli]
+      - kind: go
+        package: github.com/razvanmacovei/x402-cli@latest
+        bins: [x402-cli]
+    homepage: https://github.com/razvanmacovei/x402-cli
+---
+
 # x402-cli
 
 Pay for x402 payment-gated HTTP endpoints using USDC stablecoins.
