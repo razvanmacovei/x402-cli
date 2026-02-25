@@ -291,14 +291,15 @@ func dumpResponse(resp *http.Response, body []byte) {
 func printPaymentSummary(resp *http.Response, body []byte) {
 	fmt.Println("\n--- Payment Summary ---")
 
-	// Try to parse the JSON body for payment details.
 	var payInfo struct {
 		Accepts []struct {
-			Amount string `json:"amount"`
-			Asset  struct {
-				Address string `json:"address"`
-			} `json:"asset"`
+			Amount  string `json:"amount"`
+			Asset   string `json:"asset"`
 			Network string `json:"network"`
+			PayTo   string `json:"payTo"`
+			Extra   struct {
+				Name string `json:"name"`
+			} `json:"extra"`
 		} `json:"accepts"`
 		Resource struct {
 			URL         string `json:"url"`
@@ -308,15 +309,16 @@ func printPaymentSummary(resp *http.Response, body []byte) {
 
 	if err := json.Unmarshal(body, &payInfo); err == nil {
 		if payInfo.Resource.URL != "" {
-			fmt.Printf("Resource:    %s\n", payInfo.Resource.URL)
-		}
-		if payInfo.Resource.Description != "" {
-			fmt.Printf("Description: %s\n", payInfo.Resource.Description)
+			fmt.Printf("Resource: %s\n", payInfo.Resource.URL)
 		}
 		for _, a := range payInfo.Accepts {
-			fmt.Printf("Amount:      %s (atomic units)\n", a.Amount)
-			fmt.Printf("Network:     %s\n", a.Network)
-			fmt.Printf("Asset:       %s\n", a.Asset.Address)
+			assetName := a.Extra.Name
+			if assetName == "" {
+				assetName = a.Asset
+			}
+			fmt.Printf("Cost:     %s %s (atomic units)\n", a.Amount, assetName)
+			fmt.Printf("Network:  %s\n", a.Network)
+			fmt.Printf("Pay to:   %s\n", a.PayTo)
 		}
 	}
 }
