@@ -40,23 +40,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-
-  clawhub:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Publish to ClawHub
-        run: |
-          npm i -g clawhub
-          clawhub login --token "$CLAWHUB_TOKEN" --no-browser
-          clawhub publish skill/ --slug x402-cli --name "x402-cli" \
-            --version ${GITHUB_REF_NAME#v} \
-            --changelog "Release ${GITHUB_REF_NAME}"
-        env:
-          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
