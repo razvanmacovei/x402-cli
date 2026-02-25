@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -9,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	x402 "github.com/coinbase/x402/go"
@@ -21,6 +24,15 @@ import (
 
 var version string
 
+// headerFlags collects multiple -H flags.
+type headerFlags []string
+
+func (h *headerFlags) String() string { return strings.Join(*h, ", ") }
+func (h *headerFlags) Set(val string) error {
+	*h = append(*h, val)
+	return nil
+}
+
 func main() {
 	var (
 		insecure   bool
@@ -28,6 +40,10 @@ func main() {
 		method     string
 		showVer    bool
 		skipVerify bool
+		data       string
+		verbose    bool
+		dryRun     bool
+		headers    headerFlags
 	)
 
 	if version == "" {
@@ -41,10 +57,22 @@ func main() {
 	flag.StringVar(&method, "X", "GET", "HTTP method (shorthand)")
 	flag.BoolVar(&showVer, "version", false, "Print version and exit")
 	flag.BoolVar(&skipVerify, "skip-verify", false, "Only send Step 1 (no payment), skip Step 2")
+	flag.StringVar(&data, "data", "", "Request body (implies POST if -X not set)")
+	flag.StringVar(&data, "d", "", "Request body (shorthand)")
+	flag.Var(&headers, "H", "Custom header 'Key: Value' (repeatable)")
+	flag.Var(&headers, "header", "Custom header 'Key: Value' (repeatable)")
+	flag.BoolVar(&verbose, "verbose", false, "Show full request/response headers")
+	flag.BoolVar(&verbose, "v", false, "Show full request/response headers (shorthand)")
+	flag.BoolVar(&dryRun, "dry-run", false, "Show payment cost and ask for confirmation before paying")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "x402-cli %s — test x402 payment endpoints\n\n", version)
 		fmt.Fprintf(os.Stderr, "Usage:\n  x402-cli [flags] <url>\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli https://api.example.com/paid-endpoint\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli -k https://podinfo.localhost/api/info\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli -X POST -d '{\"query\": \"hello\"}' -H 'Content-Type: application/json' https://api.example.com/ask\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli -v --dry-run https://api.example.com/paid-endpoint\n\n")
 		fmt.Fprintf(os.Stderr, "Environment:\n")
 		fmt.Fprintf(os.Stderr, "  EVM_PRIVATE_KEY    Private key for signing payments (required for Step 2)\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -65,6 +93,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// If -d is set and method was not explicitly changed, default to POST.
+	if data != "" && method == "GET" {
+		method = "POST"
+	}
+
 	privateKey := os.Getenv("EVM_PRIVATE_KEY")
 
 	transport := &http.Transport{}
@@ -80,10 +113,14 @@ func main() {
 	fmt.Println("--- Step 1: Request without payment ---")
 
 	plainClient := &http.Client{Transport: transport, Timeout: timeout}
-	req, err := http.NewRequest(method, endpoint, nil)
+	req, err := newRequest(method, endpoint, data, headers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
 		os.Exit(1)
+	}
+
+	if verbose {
+		dumpRequest(req)
 	}
 
 	resp, err := plainClient.Do(req)
@@ -94,11 +131,17 @@ func main() {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
+	if verbose {
+		dumpResponse(resp, body)
+	}
+
 	fmt.Printf("Status: %d\n", resp.StatusCode)
 	if payReq := resp.Header.Get("PAYMENT-REQUIRED"); payReq != "" {
 		printBase64Header("PAYMENT-REQUIRED", payReq)
 	}
-	fmt.Printf("Body: %s\n\n", truncate(string(body), 300))
+	if !verbose {
+		fmt.Printf("Body: %s\n\n", truncate(string(body), 300))
+	}
 
 	if resp.StatusCode != http.StatusPaymentRequired {
 		fmt.Println("Endpoint did not return 402 Payment Required.")
@@ -111,6 +154,18 @@ func main() {
 	if skipVerify {
 		fmt.Println("--skip-verify: stopping after Step 1.")
 		os.Exit(0)
+	}
+
+	// --- Dry-run: show cost and confirm ---
+	if dryRun {
+		printPaymentSummary(resp, body)
+		fmt.Print("\nProceed with payment? [y/N] ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(scanner.Text())), "y") {
+			fmt.Println("Aborted.")
+			os.Exit(0)
+		}
+		fmt.Println()
 	}
 
 	// --- Step 2: Request with x402 payment ---
@@ -140,7 +195,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	req2, _ := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	req2, _ := newRequestWithContext(ctx, method, endpoint, data, headers)
 	resp2, err := httpClient.Do(req2)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Payment request failed: %v\n", err)
@@ -149,12 +204,19 @@ func main() {
 	defer resp2.Body.Close()
 
 	body2, _ := io.ReadAll(resp2.Body)
+
+	if verbose {
+		dumpResponse(resp2, body2)
+	}
+
 	fmt.Printf("Status: %d\n", resp2.StatusCode)
 
 	if payResp := resp2.Header.Get("PAYMENT-RESPONSE"); payResp != "" {
 		printBase64Header("PAYMENT-RESPONSE", payResp)
 	}
-	fmt.Printf("Body: %s\n\n", truncate(string(body2), 500))
+	if !verbose {
+		fmt.Printf("Body: %s\n\n", truncate(string(body2), 500))
+	}
 
 	switch resp2.StatusCode {
 	case http.StatusOK:
@@ -168,9 +230,98 @@ func main() {
 	}
 }
 
+// newRequest creates an HTTP request with optional body and custom headers.
+func newRequest(method, url, data string, headers headerFlags) (*http.Request, error) {
+	var bodyReader io.Reader
+	if data != "" {
+		bodyReader = strings.NewReader(data)
+	}
+	req, err := http.NewRequest(method, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	applyHeaders(req, headers)
+	return req, nil
+}
+
+// newRequestWithContext creates an HTTP request with context, optional body and custom headers.
+func newRequestWithContext(ctx context.Context, method, url, data string, headers headerFlags) (*http.Request, error) {
+	var bodyReader io.Reader
+	if data != "" {
+		bodyReader = strings.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	applyHeaders(req, headers)
+	return req, nil
+}
+
+// applyHeaders parses "Key: Value" strings and sets them on the request.
+func applyHeaders(req *http.Request, headers headerFlags) {
+	for _, h := range headers {
+		if k, v, ok := strings.Cut(h, ":"); ok {
+			req.Header.Set(strings.TrimSpace(k), strings.TrimSpace(v))
+		}
+	}
+}
+
+// dumpRequest prints the full HTTP request in verbose mode.
+func dumpRequest(req *http.Request) {
+	dump, err := httputil.DumpRequestOut(req, true)
+	if err != nil {
+		return
+	}
+	fmt.Printf("→ Request:\n%s\n", string(dump))
+}
+
+// dumpResponse prints the full HTTP response in verbose mode.
+func dumpResponse(resp *http.Response, body []byte) {
+	fmt.Printf("← Response:\n%s %s\n", resp.Proto, resp.Status)
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			fmt.Printf("  %s: %s\n", k, v)
+		}
+	}
+	fmt.Printf("\n%s\n\n", string(body))
+}
+
+// printPaymentSummary extracts and displays the cost from a 402 response.
+func printPaymentSummary(resp *http.Response, body []byte) {
+	fmt.Println("\n--- Payment Summary ---")
+
+	// Try to parse the JSON body for payment details.
+	var payInfo struct {
+		Accepts []struct {
+			Amount string `json:"amount"`
+			Asset  struct {
+				Address string `json:"address"`
+			} `json:"asset"`
+			Network string `json:"network"`
+		} `json:"accepts"`
+		Resource struct {
+			URL         string `json:"url"`
+			Description string `json:"description"`
+		} `json:"resource"`
+	}
+
+	if err := json.Unmarshal(body, &payInfo); err == nil {
+		if payInfo.Resource.URL != "" {
+			fmt.Printf("Resource:    %s\n", payInfo.Resource.URL)
+		}
+		if payInfo.Resource.Description != "" {
+			fmt.Printf("Description: %s\n", payInfo.Resource.Description)
+		}
+		for _, a := range payInfo.Accepts {
+			fmt.Printf("Amount:      %s (atomic units)\n", a.Amount)
+			fmt.Printf("Network:     %s\n", a.Network)
+			fmt.Printf("Asset:       %s\n", a.Asset.Address)
+		}
+	}
+}
+
 func buildVersion() string {
-	// Overridden by -ldflags at build time. If not set, try go module info
-	// (works with `go install ...@v0.1.0`).
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "(devel)" && info.Main.Version != "" {
 		return info.Main.Version
 	}

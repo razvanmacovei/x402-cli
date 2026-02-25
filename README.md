@@ -55,8 +55,14 @@ x402-cli --skip-verify https://api.example.com/paid-endpoint
 # Self-signed TLS (local development)
 x402-cli -k https://podinfo.localhost/api/info
 
-# Custom HTTP method
-x402-cli -X POST https://api.example.com/paid-endpoint
+# POST with JSON body and custom headers
+x402-cli -X POST -d '{"query": "hello"}' -H 'Content-Type: application/json' https://api.example.com/ask
+
+# Verbose output (show full request/response headers)
+x402-cli -v https://api.example.com/paid-endpoint
+
+# Dry-run: show cost and ask for confirmation before paying
+x402-cli --dry-run https://api.example.com/paid-endpoint
 ```
 
 ### Flags
@@ -64,7 +70,11 @@ x402-cli -X POST https://api.example.com/paid-endpoint
 | Flag | Description |
 |------|-------------|
 | `-k`, `--insecure` | Skip TLS certificate verification |
-| `-X`, `--method` | HTTP method (default: `GET`) |
+| `-X`, `--method` | HTTP method (default: `GET`, `POST` if `-d` is set) |
+| `-d`, `--data` | Request body (implies `POST` if `-X` not set) |
+| `-H`, `--header` | Custom header `Key: Value` (repeatable) |
+| `-v`, `--verbose` | Show full request/response headers |
+| `--dry-run` | Show payment cost and ask for confirmation before paying |
 | `--timeout` | Request timeout (default: `30s`) |
 | `--skip-verify` | Only run Step 1 (no payment) |
 | `--version` | Print version |
