@@ -72,10 +72,19 @@ func main() {
 		version = buildVersion()
 	}
 
-	// Handle "wallet" subcommand before flag parsing.
-	if len(os.Args) > 1 && os.Args[1] == "wallet" {
-		runWalletCmd(os.Args[2:])
-		return
+	// Handle subcommands before flag parsing.
+	showHelp := false
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "wallet":
+			runWalletCmd(os.Args[2:])
+			return
+		case "version":
+			fmt.Printf("x402-cli %s\n", version)
+			return
+		case "help":
+			showHelp = true
+		}
 	}
 
 	var (
@@ -136,6 +145,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  EVM_PRIVATE_KEY    Private key for signing payments (required)\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
+	}
+
+	if showHelp {
+		flag.Usage()
+		os.Exit(0)
 	}
 
 	flag.Parse()
