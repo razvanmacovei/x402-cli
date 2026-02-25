@@ -175,11 +175,12 @@ func main() {
 	}
 
 	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
-		errMsg := fmt.Sprintf("invalid URL %q: must start with http:// or https://", endpoint)
+		errMsg := fmt.Sprintf("unknown command %q", endpoint)
 		if jsonOutput {
 			exitJSON(&jsonResult{Version: version, Status: "error", Error: errMsg}, ExitError)
 		}
 		fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
+		fmt.Fprintln(os.Stderr, "Run 'x402-cli help' for usage")
 		os.Exit(ExitError)
 	}
 
