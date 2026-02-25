@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/razvanmacovei/x402-cli)](https://github.com/razvanmacovei/x402-cli/releases)
 
-**CLI tool for testing [x402](https://x402.org) payment-gated endpoints.**
+**CLI tool for [x402](https://x402.org) payment-gated endpoints. Built for humans and AI agents.**
 
 Sends two requests to any x402-enabled API:
 1. Without payment — expects `402 Payment Required`, decodes and displays the payment requirements
@@ -63,6 +63,13 @@ x402-cli -v https://api.example.com/paid-endpoint
 
 # Dry-run: show cost and ask for confirmation before paying
 x402-cli --dry-run https://api.example.com/paid-endpoint
+
+# Agent mode: JSON output, auto-confirm payment, no interactive prompts
+export EVM_PRIVATE_KEY=0x...
+x402-cli --json -y https://api.example.com/paid-endpoint
+
+# Agent probe: check price without paying
+x402-cli --json --skip-verify https://api.example.com/paid-endpoint
 ```
 
 ### Flags
@@ -75,6 +82,9 @@ x402-cli --dry-run https://api.example.com/paid-endpoint
 | `-H`, `--header` | Custom header `Key: Value` (repeatable) |
 | `-v`, `--verbose` | Show full request/response headers |
 | `--dry-run` | Show payment cost and ask for confirmation before paying |
+| `--json` | Output structured JSON (for agents and scripts) |
+| `-y`, `--yes` | Auto-confirm payment without prompting |
+| `-q`, `--quiet` | Suppress human-readable output |
 | `--timeout` | Request timeout (default: `30s`) |
 | `--skip-verify` | Only run Step 1 (no payment) |
 | `--version` | Print version |
@@ -155,6 +165,40 @@ x402-cli                    x402 Server               Facilitator
       |                                  |<-- {success, tx} -------|
       |<-- 200 + PAYMENT-RESPONSE -------|                         |
 ```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success (payment accepted or probe completed) |
+| `1` | Error (network, config, or unexpected failure) |
+| `2` | Payment rejected by facilitator |
+| `3` | Route is free (no payment needed) |
+
+## Agent Integration
+
+The `--json` flag outputs structured JSON that agents can parse directly:
+
+```bash
+# Probe endpoint and parse with jq
+RESULT=$(x402-cli --json --skip-verify https://api.example.com/endpoint)
+PRICE=$(echo "$RESULT" | jq -r '.probe.paymentRequirements.accepts[0].amount')
+NETWORK=$(echo "$RESULT" | jq -r '.probe.paymentRequirements.accepts[0].network')
+
+# Pay and get response
+RESULT=$(x402-cli --json -y https://api.example.com/endpoint)
+STATUS=$(echo "$RESULT" | jq -r '.status')        # "accepted", "rejected", "free", "error"
+BODY=$(echo "$RESULT" | jq -r '.payment.body')     # backend response
+TX=$(echo "$RESULT" | jq -r '.payment.paymentResponse.transaction')
+```
+
+JSON output fields:
+- `status`: `"free"`, `"payment_required"`, `"accepted"`, `"rejected"`, `"error"`
+- `probe.paymentRequired`: boolean
+- `probe.paymentRequirements`: decoded x402 payment requirements
+- `payment.accepted`: boolean
+- `payment.paymentResponse`: decoded facilitator settle response (includes `transaction` hash)
+- `error`: error message (when `status` is `"error"`)
 
 ## Supported Networks
 

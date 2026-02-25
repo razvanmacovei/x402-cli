@@ -24,6 +24,14 @@ import (
 
 var version string
 
+// Exit codes for programmatic use by agents.
+const (
+	ExitSuccess         = 0
+	ExitError           = 1
+	ExitPaymentRejected = 2
+	ExitFreeRoute       = 3
+)
+
 // headerFlags collects multiple -H flags.
 type headerFlags []string
 
@@ -31,6 +39,32 @@ func (h *headerFlags) String() string { return strings.Join(*h, ", ") }
 func (h *headerFlags) Set(val string) error {
 	*h = append(*h, val)
 	return nil
+}
+
+// jsonResult is the structured output for --json mode.
+type jsonResult struct {
+	Version  string       `json:"version"`
+	Endpoint string       `json:"endpoint"`
+	Method   string       `json:"method"`
+	Status   string       `json:"status"`
+	Probe    *probeResult `json:"probe"`
+	Payment  *payResult   `json:"payment,omitempty"`
+	Error    string       `json:"error,omitempty"`
+}
+
+type probeResult struct {
+	StatusCode          int              `json:"statusCode"`
+	PaymentRequired     bool             `json:"paymentRequired"`
+	PaymentRequirements *json.RawMessage `json:"paymentRequirements,omitempty"`
+	Body                string           `json:"body,omitempty"`
+}
+
+type payResult struct {
+	StatusCode      int              `json:"statusCode"`
+	Accepted        bool             `json:"accepted"`
+	Signer          string           `json:"signer,omitempty"`
+	PaymentResponse *json.RawMessage `json:"paymentResponse,omitempty"`
+	Body            string           `json:"body,omitempty"`
 }
 
 func main() {
@@ -43,6 +77,9 @@ func main() {
 		data       string
 		verbose    bool
 		dryRun     bool
+		jsonOutput bool
+		autoYes    bool
+		quiet      bool
 		headers    headerFlags
 	)
 
@@ -64,6 +101,11 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "Show full request/response headers")
 	flag.BoolVar(&verbose, "v", false, "Show full request/response headers (shorthand)")
 	flag.BoolVar(&dryRun, "dry-run", false, "Show payment cost and ask for confirmation before paying")
+	flag.BoolVar(&jsonOutput, "json", false, "Output structured JSON (for agents and scripts)")
+	flag.BoolVar(&autoYes, "yes", false, "Auto-confirm payment without prompting")
+	flag.BoolVar(&autoYes, "y", false, "Auto-confirm payment without prompting (shorthand)")
+	flag.BoolVar(&quiet, "quiet", false, "Suppress human-readable output, only print JSON or exit code")
+	flag.BoolVar(&quiet, "q", false, "Suppress human-readable output (shorthand)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "x402-cli %s — test x402 payment endpoints\n\n", version)
@@ -72,7 +114,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  x402-cli https://api.example.com/paid-endpoint\n")
 		fmt.Fprintf(os.Stderr, "  x402-cli -k https://podinfo.localhost/api/info\n")
 		fmt.Fprintf(os.Stderr, "  x402-cli -X POST -d '{\"query\": \"hello\"}' -H 'Content-Type: application/json' https://api.example.com/ask\n")
-		fmt.Fprintf(os.Stderr, "  x402-cli -v --dry-run https://api.example.com/paid-endpoint\n\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli -v --dry-run https://api.example.com/paid-endpoint\n")
+		fmt.Fprintf(os.Stderr, "  x402-cli --json -y https://api.example.com/paid-endpoint   # agent mode\n\n")
+		fmt.Fprintf(os.Stderr, "Exit codes:\n")
+		fmt.Fprintf(os.Stderr, "  0  Success (payment accepted or probe completed)\n")
+		fmt.Fprintf(os.Stderr, "  1  Error (network, config, or unexpected failure)\n")
+		fmt.Fprintf(os.Stderr, "  2  Payment rejected by facilitator\n")
+		fmt.Fprintf(os.Stderr, "  3  Route is free (no payment needed)\n\n")
 		fmt.Fprintf(os.Stderr, "Environment:\n")
 		fmt.Fprintf(os.Stderr, "  EVM_PRIVATE_KEY    Private key for signing payments (required for Step 2)\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
@@ -82,20 +130,40 @@ func main() {
 	flag.Parse()
 
 	if showVer {
-		fmt.Printf("x402-cli %s\n", version)
+		if jsonOutput {
+			out, _ := json.Marshal(map[string]string{"version": version})
+			fmt.Println(string(out))
+		} else {
+			fmt.Printf("x402-cli %s\n", version)
+		}
 		os.Exit(0)
 	}
 
 	endpoint := flag.Arg(0)
 	if endpoint == "" {
+		if jsonOutput {
+			exitJSON(&jsonResult{Version: version, Status: "error", Error: "URL argument is required"}, ExitError)
+		}
 		fmt.Fprintln(os.Stderr, "Error: URL argument is required")
 		fmt.Fprintln(os.Stderr, "Usage: x402-cli [flags] <url>")
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
 
 	// If -d is set and method was not explicitly changed, default to POST.
 	if data != "" && method == "GET" {
 		method = "POST"
+	}
+
+	// quiet implies no human-readable output (JSON still prints).
+	log := func(format string, a ...any) {
+		if !quiet && !jsonOutput {
+			fmt.Printf(format, a...)
+		}
+	}
+	logln := func(a ...any) {
+		if !quiet && !jsonOutput {
+			fmt.Println(a...)
+		}
 	}
 
 	privateKey := os.Getenv("EVM_PRIVATE_KEY")
@@ -105,84 +173,145 @@ func main() {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
-	fmt.Printf("x402-cli %s\n", version)
-	fmt.Printf("Endpoint: %s\n", endpoint)
-	fmt.Printf("Method:   %s\n\n", method)
+	// Build JSON result for --json mode.
+	result := &jsonResult{
+		Version:  version,
+		Endpoint: endpoint,
+		Method:   method,
+	}
+
+	log("x402-cli %s\n", version)
+	log("Endpoint: %s\n", endpoint)
+	log("Method:   %s\n\n", method)
 
 	// --- Step 1: Request without payment → expect 402 ---
-	fmt.Println("--- Step 1: Request without payment ---")
+	logln("--- Step 1: Request without payment ---")
 
 	plainClient := &http.Client{Transport: transport, Timeout: timeout}
 	req, err := newRequest(method, endpoint, data, headers)
 	if err != nil {
+		if jsonOutput {
+			result.Status = "error"
+			result.Error = err.Error()
+			exitJSON(result, ExitError)
+		}
 		fmt.Fprintf(os.Stderr, "Error creating request: %v\n", err)
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
 
-	if verbose {
+	if verbose && !quiet && !jsonOutput {
 		dumpRequest(req)
 	}
 
 	resp, err := plainClient.Do(req)
 	if err != nil {
+		if jsonOutput {
+			result.Status = "error"
+			result.Error = err.Error()
+			exitJSON(result, ExitError)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	if verbose {
+	if verbose && !quiet && !jsonOutput {
 		dumpResponse(resp, body)
 	}
 
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	if payReq := resp.Header.Get("PAYMENT-REQUIRED"); payReq != "" {
-		printBase64Header("PAYMENT-REQUIRED", payReq)
+	// Build probe result.
+	probe := &probeResult{
+		StatusCode:      resp.StatusCode,
+		PaymentRequired: resp.StatusCode == http.StatusPaymentRequired,
 	}
-	if !verbose {
-		fmt.Printf("Body: %s\n\n", truncate(string(body), 300))
+	if payReqHeader := resp.Header.Get("PAYMENT-REQUIRED"); payReqHeader != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(payReqHeader); err == nil {
+			raw := json.RawMessage(decoded)
+			probe.PaymentRequirements = &raw
+		}
+		if !quiet && !jsonOutput {
+			printBase64Header("PAYMENT-REQUIRED", payReqHeader)
+		}
 	}
+	if !jsonOutput {
+		log("Status: %d\n", resp.StatusCode)
+		if !verbose {
+			log("Body: %s\n\n", truncate(string(body), 300))
+		}
+	}
+	probe.Body = string(body)
+	result.Probe = probe
 
 	if resp.StatusCode != http.StatusPaymentRequired {
-		fmt.Println("Endpoint did not return 402 Payment Required.")
+		logln("Endpoint did not return 402 Payment Required.")
 		if resp.StatusCode == http.StatusOK {
-			fmt.Println("The endpoint is accessible without payment (free route).")
+			logln("The endpoint is accessible without payment (free route).")
+			result.Status = "free"
+			if jsonOutput {
+				exitJSON(result, ExitFreeRoute)
+			}
+			os.Exit(ExitFreeRoute)
 		}
-		os.Exit(0)
+		result.Status = "no_402"
+		if jsonOutput {
+			exitJSON(result, ExitSuccess)
+		}
+		os.Exit(ExitSuccess)
 	}
 
 	if skipVerify {
-		fmt.Println("--skip-verify: stopping after Step 1.")
-		os.Exit(0)
+		logln("--skip-verify: stopping after Step 1.")
+		result.Status = "payment_required"
+		if jsonOutput {
+			exitJSON(result, ExitSuccess)
+		}
+		os.Exit(ExitSuccess)
 	}
 
 	// --- Dry-run: show cost and confirm ---
-	if dryRun {
-		printPaymentSummary(resp, body)
+	if dryRun && !autoYes {
+		if jsonOutput {
+			// In JSON mode, dry-run without -y just returns the requirements.
+			result.Status = "payment_required"
+			exitJSON(result, ExitSuccess)
+		}
+		printPaymentSummary(body)
 		fmt.Print("\nProceed with payment? [y/N] ")
 		scanner := bufio.NewScanner(os.Stdin)
 		if !scanner.Scan() || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(scanner.Text())), "y") {
 			fmt.Println("Aborted.")
-			os.Exit(0)
+			os.Exit(ExitSuccess)
 		}
 		fmt.Println()
 	}
 
 	// --- Step 2: Request with x402 payment ---
 	if privateKey == "" {
-		fmt.Fprintln(os.Stderr, "\nError: EVM_PRIVATE_KEY is required for Step 2 (payment).")
+		errMsg := "EVM_PRIVATE_KEY is required for Step 2 (payment)"
+		if jsonOutput {
+			result.Status = "error"
+			result.Error = errMsg
+			exitJSON(result, ExitError)
+		}
+		fmt.Fprintln(os.Stderr, "\nError: "+errMsg+".")
 		fmt.Fprintln(os.Stderr, "Set it with: export EVM_PRIVATE_KEY=0x...")
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
 
-	fmt.Println("--- Step 2: Request with x402 payment ---")
+	logln("--- Step 2: Request with x402 payment ---")
 
 	evmSigner, err := evmsigners.NewClientSignerFromPrivateKey(privateKey)
 	if err != nil {
+		if jsonOutput {
+			result.Status = "error"
+			result.Error = "failed to create signer: " + err.Error()
+			exitJSON(result, ExitError)
+		}
 		fmt.Fprintf(os.Stderr, "Failed to create signer: %v\n", err)
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
-	fmt.Printf("Signer: %s\n", evmSigner.Address())
+	log("Signer: %s\n", evmSigner.Address())
 
 	x402Client := x402.Newx402Client().
 		Register("eip155:*", evm.NewExactEvmScheme(evmSigner))
@@ -198,36 +327,78 @@ func main() {
 	req2, _ := newRequestWithContext(ctx, method, endpoint, data, headers)
 	resp2, err := httpClient.Do(req2)
 	if err != nil {
+		if jsonOutput {
+			result.Status = "error"
+			result.Error = "payment request failed: " + err.Error()
+			exitJSON(result, ExitError)
+		}
 		fmt.Fprintf(os.Stderr, "Payment request failed: %v\n", err)
-		os.Exit(1)
+		os.Exit(ExitError)
 	}
 	defer resp2.Body.Close()
 
 	body2, _ := io.ReadAll(resp2.Body)
 
-	if verbose {
+	if verbose && !quiet && !jsonOutput {
 		dumpResponse(resp2, body2)
 	}
 
-	fmt.Printf("Status: %d\n", resp2.StatusCode)
-
-	if payResp := resp2.Header.Get("PAYMENT-RESPONSE"); payResp != "" {
-		printBase64Header("PAYMENT-RESPONSE", payResp)
+	// Build payment result.
+	pay := &payResult{
+		StatusCode: resp2.StatusCode,
+		Accepted:   resp2.StatusCode == http.StatusOK,
+		Signer:     evmSigner.Address(),
+		Body:       string(body2),
 	}
-	if !verbose {
-		fmt.Printf("Body: %s\n\n", truncate(string(body2), 500))
+	if payRespHeader := resp2.Header.Get("PAYMENT-RESPONSE"); payRespHeader != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(payRespHeader); err == nil {
+			raw := json.RawMessage(decoded)
+			pay.PaymentResponse = &raw
+		}
+		if !quiet && !jsonOutput {
+			printBase64Header("PAYMENT-RESPONSE", payRespHeader)
+		}
+	}
+	result.Payment = pay
+
+	if !jsonOutput {
+		log("Status: %d\n", resp2.StatusCode)
+		if !verbose {
+			log("Body: %s\n\n", truncate(string(body2), 500))
+		}
 	}
 
 	switch resp2.StatusCode {
 	case http.StatusOK:
-		fmt.Println("Payment accepted!")
+		logln("Payment accepted!")
+		result.Status = "accepted"
+		if jsonOutput {
+			exitJSON(result, ExitSuccess)
+		}
+		os.Exit(ExitSuccess)
 	case http.StatusPaymentRequired:
-		fmt.Println("Payment was rejected. Check wallet balance and facilitator logs.")
-		os.Exit(1)
+		logln("Payment was rejected. Check wallet balance and facilitator logs.")
+		result.Status = "rejected"
+		if jsonOutput {
+			exitJSON(result, ExitPaymentRejected)
+		}
+		os.Exit(ExitPaymentRejected)
 	default:
-		fmt.Printf("Unexpected status %d.\n", resp2.StatusCode)
-		os.Exit(1)
+		log("Unexpected status %d.\n", resp2.StatusCode)
+		result.Status = "error"
+		result.Error = fmt.Sprintf("unexpected status %d", resp2.StatusCode)
+		if jsonOutput {
+			exitJSON(result, ExitError)
+		}
+		os.Exit(ExitError)
 	}
+}
+
+// exitJSON marshals the result to stdout and exits.
+func exitJSON(result *jsonResult, code int) {
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(out))
+	os.Exit(code)
 }
 
 // newRequest creates an HTTP request with optional body and custom headers.
@@ -288,7 +459,7 @@ func dumpResponse(resp *http.Response, body []byte) {
 }
 
 // printPaymentSummary extracts and displays the cost from a 402 response.
-func printPaymentSummary(resp *http.Response, body []byte) {
+func printPaymentSummary(body []byte) {
 	fmt.Println("\n--- Payment Summary ---")
 
 	var payInfo struct {
