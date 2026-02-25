@@ -174,6 +174,15 @@ func main() {
 		os.Exit(ExitError)
 	}
 
+	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+		errMsg := fmt.Sprintf("invalid URL %q: must start with http:// or https://", endpoint)
+		if jsonOutput {
+			exitJSON(&jsonResult{Version: version, Status: "error", Error: errMsg}, ExitError)
+		}
+		fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
+		os.Exit(ExitError)
+	}
+
 	// If -d is set and method was not explicitly changed, default to POST.
 	if data != "" && method == "GET" {
 		method = "POST"
