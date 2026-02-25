@@ -211,6 +211,19 @@ Any EVM network supported by the x402 protocol:
 | Avalanche | eip155:43114 |
 | Avalanche Fuji | eip155:43113 |
 
+## OpenClaw Skill
+
+x402-cli is available as an [OpenClaw](https://openclaw.ai) AI assistant skill via [ClawHub](https://clawhub.ai).
+
+This enables AI agents running in OpenClaw to autonomously probe and pay x402-gated APIs without human intervention, using the `exec` tool.
+
+**Install:**
+```bash
+clawhub install x402-cli
+```
+
+See [`SKILL.md`](SKILL.md) for the full skill manifest.
+
 ## Related
 
 - [x402-k8s-operator](https://github.com/razvanmacovei/x402-k8s-operator) — Kubernetes operator that monetizes any API with x402
